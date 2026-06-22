@@ -32,6 +32,52 @@ export type WorkflowDefinition<Input = unknown, Output = unknown> = {
   run(context: WorkflowSdkContext<Input>): Promise<Output> | Output;
 };
 
+export type WorkflowSpec = {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  steps: WorkflowStep[];
+};
+
+export type WorkflowStep =
+  | {
+      type: "activity";
+      id: string;
+      activity: string;
+      input: Record<string, unknown>;
+      output?: string;
+      key?: string;
+    }
+  | {
+      type: "for_each";
+      id: string;
+      items: string;
+      itemName: string;
+      steps: WorkflowStep[];
+    }
+  | {
+      type: "if";
+      id: string;
+      condition: string;
+      then: WorkflowStep[];
+      else?: WorkflowStep[];
+    };
+
+export type WorkflowGraphNode = {
+  id: string;
+  label: string;
+  kind: "activity" | "for_each" | "if";
+  description: string;
+  depth: number;
+  parentId?: string;
+  activityName?: string;
+};
+
+export type WorkflowGraph = {
+  title: string;
+  nodes: WorkflowGraphNode[];
+};
+
 export type ActivityExecutionStatus = "running" | "succeeded" | "failed" | "skipped";
 export type WorkflowRunStatus = "created" | "running" | "completed" | "failed";
 
@@ -127,6 +173,22 @@ export declare function createWorkflowEngine(options?: {
   activities?: ActivityDefinition<any, any>[];
   store?: WorkflowRunStore;
 }): WorkflowEngineFacade;
+
+export declare function compileWorkflowFromNaturalLanguage(
+  text: string,
+): WorkflowSpec;
+
+export declare function validateWorkflowSpec(
+  spec: WorkflowSpec,
+  activities: ActivityDefinition<any, any>[] | Record<string, ActivityDefinition<any, any>>,
+): { ok: true };
+
+export declare function createWorkflowFromSpec<Input = unknown, Output = unknown>(
+  spec: WorkflowSpec,
+  activities: ActivityDefinition<any, any>[] | Record<string, ActivityDefinition<any, any>>,
+): WorkflowDefinition<Input, Output>;
+
+export declare function workflowSpecToGraph(spec: WorkflowSpec): WorkflowGraph;
 
 export declare class ActivityRegistry {
   register(name: string, handler: (input: unknown, context: ActivityContext) => unknown): void;
