@@ -25,6 +25,9 @@
     "quickstart": "node examples/quickstart.js",
     "demo": "node scripts/demo.js",
     "test": "node --test tests/*.test.js",
+    "ui": "npm --prefix playground run dev",
+    "ui:install": "npm --prefix playground install",
+    "ui:verify": "npm --prefix playground run verify",
     "verify": "npm test && npm run demo && npm run quickstart"
   },
   "keywords": [

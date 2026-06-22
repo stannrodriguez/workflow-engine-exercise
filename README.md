@@ -63,6 +63,25 @@ Run the included quickstart:
 npm run quickstart
 ```
 
+## Visual Playground
+
+The repository includes a shadcn/Next.js playground that visualizes the Fleet
+Upgrade workflow as a builder canvas. It imports the root SDK entrypoint for the
+local demo, so retry and replay behavior is backed by real workflow history.
+
+```bash
+npm run ui:install
+npm run ui
+```
+
+Then open the printed localhost URL and try the **Retryable failure** scenario:
+
+1. Start a run where firmware download fails.
+2. Inspect the failed activity and captured error.
+3. Click **Retry failed run**.
+4. Confirm earlier successful activities become history hits instead of reruns.
+5. Select an activity and replay from that point.
+
 ## Core Concepts
 
 - `activity()` defines a side-effecting or reusable unit of work.
@@ -87,6 +106,9 @@ If an activity is called more than once without a key during one workflow invoca
 npm test
 npm run demo
 npm run quickstart
+npm run ui:install
+npm run ui
+npm run ui:verify
 npm run verify
 ```
 
@@ -116,6 +138,10 @@ scripts/
 tests/
   sdk.test.js
   workflow-engine.test.js
+playground/
+  app/             Next.js route handlers and page
+  components/      shadcn workflow visualizer
+  lib/             demo workflow runtime using the public SDK
 docs/
   workflow-engine-contract.md
   developer-sdk-tech-spec.md
@@ -124,3 +150,7 @@ docs/
 ## Design Choice
 
 The core engine owns deterministic execution history, retry, and replay. The SDK is a thin authoring layer that makes workflows pleasant to write while preserving explicit replay keys for repeated or looped activities.
+
+The shadcn playground is intentionally outside the package `files` list. It
+makes the GitHub repo easy to demo, while keeping installed SDK consumers on the
+small `src/` package surface.
