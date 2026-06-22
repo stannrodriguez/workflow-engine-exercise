@@ -1,0 +1,41 @@
+{
+  "name": "workflow-engine-exercise",
+  "version": "0.1.0",
+  "description": "A small workflow engine SDK with activity history, retry, and replay support.",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    },
+    "./engine": {
+      "types": "./src/index.d.ts",
+      "import": "./src/engine.js"
+    }
+  },
+  "files": [
+    "src",
+    "examples",
+    "docs",
+    "README.md"
+  ],
+  "scripts": {
+    "quickstart": "node examples/quickstart.js",
+    "demo": "node scripts/demo.js",
+    "test": "node --test tests/*.test.js",
+    "verify": "npm test && npm run demo && npm run quickstart"
+  },
+  "keywords": [
+    "workflow",
+    "orchestration",
+    "activities",
+    "retry",
+    "replay"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}
