@@ -83,6 +83,8 @@ type CompilePayload = {
   workflow: WorkflowGraph;
 };
 
+type ActiveTab = "builder" | "spec" | "timeline" | "output";
+
 type ActivityExecution = {
   activityId: string;
   activityName: string;
@@ -152,6 +154,9 @@ export function WorkflowVisualizer() {
   const [run, setRun] = useState<DemoRun | null>(null);
   const [selectedActivityId, setSelectedActivityId] = useState<string | null>(null);
   const [applyReplayPatch, setApplyReplayPatch] = useState(true);
+  const [activeTab, setActiveTab] = useState<ActiveTab>("builder");
+  const [compileSummary, setCompileSummary] = useState<string | null>(null);
+  const [isCompiling, setIsCompiling] = useState(false);
   const [isMutating, setIsMutating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -161,6 +166,9 @@ export function WorkflowVisualizer() {
         setSourceText(payload.sourceText);
         setSpec(payload.spec);
         setWorkflow(payload.workflow);
+        setCompileSummary(
+          `Loaded ${countSpecSteps(payload.spec).total} validated spec steps.`,
+        );
       })
       .catch((caughtError: unknown) =>
         setError(caughtError instanceof Error ? caughtError.message : "Load failed."),
@@ -203,6 +211,7 @@ export function WorkflowVisualizer() {
   }, [run, workflow]);
 
   async function compileWorkflow() {
+    setIsCompiling(true);
     await mutate(async () => {
       const payload = await fetchJson<CompilePayload>("/api/workflow/compile", {
         method: "POST",
@@ -213,7 +222,12 @@ export function WorkflowVisualizer() {
       setWorkflow(payload.workflow);
       setRun(null);
       setSelectedActivityId(null);
+      setCompileSummary(
+        `Compiled ${countSpecSteps(payload.spec).total} validated spec steps.`,
+      );
+      setActiveTab("spec");
     });
+    setIsCompiling(false);
   }
 
   async function runScenario(scenario: string) {
@@ -330,8 +344,13 @@ export function WorkflowVisualizer() {
                 onChange={(event) => setSourceText(event.target.value)}
               />
               <Button disabled={isMutating || !sourceText.trim()} onClick={compileWorkflow}>
-                Compile workflow
+                {isCompiling ? "Compiling..." : "Compile workflow"}
               </Button>
+              {compileSummary ? (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800">
+                  {compileSummary}
+                </div>
+              ) : null}
             </CardContent>
           </Card>
 
@@ -433,7 +452,10 @@ export function WorkflowVisualizer() {
             </div>
           ) : null}
 
-          <Tabs defaultValue="builder">
+          <Tabs
+            value={activeTab}
+            onValueChange={(value) => setActiveTab(value as ActiveTab)}
+          >
             <TabsList>
               <TabsTrigger value="builder">Builder</TabsTrigger>
               <TabsTrigger value="spec">Spec</TabsTrigger>
