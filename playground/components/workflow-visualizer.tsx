@@ -28,20 +28,59 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+
+type WorkflowSpec = {
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  name: string;
+  steps: WorkflowStep[];
+};
+
+type WorkflowStep =
+  | {
+      activity: string;
+      id: string;
+      input: Record<string, unknown>;
+      key?: string;
+      output?: string;
+      type: "activity";
+    }
+  | {
+      id: string;
+      itemName: string;
+      items: string;
+      steps: WorkflowStep[];
+      type: "for_each";
+    }
+  | {
+      condition: string;
+      else?: WorkflowStep[];
+      id: string;
+      then: WorkflowStep[];
+      type: "if";
+    };
 
 type WorkflowNode = {
   activityName?: string;
-  activityNames?: string[];
+  depth: number;
   description: string;
   id: string;
-  kind: string;
+  kind: "activity" | "for_each" | "if";
   label: string;
+  parentId?: string;
 };
 
 type WorkflowGraph = {
   nodes: WorkflowNode[];
   title: string;
+};
+
+type CompilePayload = {
+  sourceText: string;
+  spec: WorkflowSpec;
+  workflow: WorkflowGraph;
 };
 
 type ActivityExecution = {
@@ -107,6 +146,8 @@ const scenarios = [
 ] as const;
 
 export function WorkflowVisualizer() {
+  const [sourceText, setSourceText] = useState("");
+  const [spec, setSpec] = useState<WorkflowSpec | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowGraph | null>(null);
   const [run, setRun] = useState<DemoRun | null>(null);
   const [selectedActivityId, setSelectedActivityId] = useState<string | null>(null);
@@ -115,8 +156,12 @@ export function WorkflowVisualizer() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void fetchJson<{ workflow: WorkflowGraph }>("/api/workflow")
-      .then((payload) => setWorkflow(payload.workflow))
+    void fetchJson<CompilePayload>("/api/workflow")
+      .then((payload) => {
+        setSourceText(payload.sourceText);
+        setSpec(payload.spec);
+        setWorkflow(payload.workflow);
+      })
       .catch((caughtError: unknown) =>
         setError(caughtError instanceof Error ? caughtError.message : "Load failed."),
       );
@@ -126,6 +171,8 @@ export function WorkflowVisualizer() {
     return run?.timeline.find((activity) => activity.activityId === selectedActivityId);
   }, [run, selectedActivityId]);
 
+  const specStats = useMemo(() => countSpecSteps(spec), [spec]);
+
   const nodeStatuses = useMemo(() => {
     const statuses = new Map<string, ActivityExecution["status"] | "pending">();
     if (!workflow || !run) {
@@ -133,10 +180,11 @@ export function WorkflowVisualizer() {
     }
 
     for (const node of workflow.nodes) {
-      const activityNames = node.activityNames ?? [node.activityName];
-      const events = run.timeline.filter((activity) =>
-        activityNames.includes(activity.activityName),
-      );
+      const events = node.activityName
+        ? run.timeline.filter(
+            (activity) => activity.activityName === node.activityName,
+          )
+        : [];
 
       if (events.some((activity) => activity.status === "failed")) {
         statuses.set(node.id, "failed");
@@ -154,11 +202,30 @@ export function WorkflowVisualizer() {
     return statuses;
   }, [run, workflow]);
 
+  async function compileWorkflow() {
+    await mutate(async () => {
+      const payload = await fetchJson<CompilePayload>("/api/workflow/compile", {
+        method: "POST",
+        body: JSON.stringify({ text: sourceText }),
+      });
+      setSourceText(payload.sourceText);
+      setSpec(payload.spec);
+      setWorkflow(payload.workflow);
+      setRun(null);
+      setSelectedActivityId(null);
+    });
+  }
+
   async function runScenario(scenario: string) {
+    if (!spec) {
+      setError("Compile a workflow before running it.");
+      return;
+    }
+
     await mutate(async () => {
       const payload = await fetchJson<{ run: DemoRun }>("/api/runs", {
         method: "POST",
-        body: JSON.stringify({ scenario }),
+        body: JSON.stringify({ scenario, spec }),
       });
       setRun(payload.run);
       setSelectedActivityId(
@@ -219,20 +286,21 @@ export function WorkflowVisualizer() {
   }
 
   function selectNode(node: WorkflowNode) {
-    if (!run) {
+    if (!run || !node.activityName) {
       return;
     }
 
-    const activityNames = node.activityNames ?? [node.activityName];
-    const activity = run.timeline.find((item) =>
-      activityNames.includes(item.activityName),
+    const events = run.timeline.filter(
+      (activity) => activity.activityName === node.activityName,
     );
+    const activity =
+      events.find((item) => item.status === "failed") ?? events.at(-1) ?? null;
     setSelectedActivityId(activity?.activityId ?? null);
   }
 
   return (
     <main className="min-h-screen bg-muted/30 px-5 py-6 text-foreground md:px-8">
-      <div className="mx-auto grid w-full max-w-[1500px] gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
+      <div className="mx-auto grid w-full max-w-[1540px] gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
         <aside className="grid gap-4 self-start">
           <Card>
             <CardHeader>
@@ -241,8 +309,8 @@ export function WorkflowVisualizer() {
                   <Workflow className="size-5" />
                 </span>
                 <div>
-                  <CardTitle>Workflow visualizer</CardTitle>
-                  <CardDescription>SDK retry and replay demo</CardDescription>
+                  <CardTitle>Workflow builder</CardTitle>
+                  <CardDescription>Natural language to validated spec</CardDescription>
                 </div>
               </div>
             </CardHeader>
@@ -250,16 +318,35 @@ export function WorkflowVisualizer() {
 
           <Card>
             <CardHeader>
+              <CardTitle>Natural language</CardTitle>
+              <CardDescription>
+                Compile prose into a structured spec before execution.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3">
+              <Textarea
+                className="min-h-48 resize-y text-sm leading-6"
+                value={sourceText}
+                onChange={(event) => setSourceText(event.target.value)}
+              />
+              <Button disabled={isMutating || !sourceText.trim()} onClick={compileWorkflow}>
+                Compile workflow
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle>Run scenario</CardTitle>
               <CardDescription>
-                Start a run against the local SDK engine session.
+                Execute the compiled spec with deterministic SDK activities.
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-2">
               {scenarios.map((scenario) => (
                 <Button
                   className="h-auto justify-start gap-3 whitespace-normal px-3 py-3 text-left"
-                  disabled={isMutating}
+                  disabled={isMutating || !spec}
                   key={scenario.value}
                   onClick={() => void runScenario(scenario.value)}
                   variant={run?.scenario.name === scenario.value ? "default" : "outline"}
@@ -280,7 +367,7 @@ export function WorkflowVisualizer() {
             <CardHeader>
               <CardTitle>Recovery</CardTitle>
               <CardDescription>
-                Retry a failure or replay from a selected activity.
+                Retry a failed run or replay from a selected activity row.
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3">
@@ -320,15 +407,16 @@ export function WorkflowVisualizer() {
               </Badge>
               <div className="space-y-2">
                 <h1 className="max-w-4xl text-3xl font-semibold tracking-tight md:text-5xl">
-                  Watch activities execute, fail, retry from history, and replay.
+                  Compile natural language into a safe workflow spec.
                 </h1>
                 <p className="max-w-3xl text-base leading-7 text-muted-foreground">
-                  The UI calls a Next route layer that uses the package SDK, so
-                  every graph state is backed by actual workflow run history.
+                  The playground proves the architecture: prose becomes JSON,
+                  validation checks registered activities, and the existing SDK
+                  executes deterministic activity steps with retry and replay history.
                 </p>
               </div>
             </div>
-            <MetricStrip run={run} />
+            <MetricStrip run={run} specStats={specStats} />
           </header>
 
           {error ? (
@@ -348,18 +436,23 @@ export function WorkflowVisualizer() {
           <Tabs defaultValue="builder">
             <TabsList>
               <TabsTrigger value="builder">Builder</TabsTrigger>
+              <TabsTrigger value="spec">Spec</TabsTrigger>
               <TabsTrigger value="timeline">Timeline</TabsTrigger>
               <TabsTrigger value="output">Output</TabsTrigger>
             </TabsList>
 
-            <TabsContent value="builder" className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+            <TabsContent
+              value="builder"
+              className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]"
+            >
               <Card>
                 <CardHeader className="border-b">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <CardTitle>Workflow builder canvas</CardTitle>
+                      <CardTitle>{workflow?.title ?? "Workflow graph"}</CardTitle>
                       <CardDescription>
-                        Node color reflects the latest matching activity state.
+                        Control-flow nodes come from the spec; colored activity nodes
+                        reflect the latest matching run history.
                       </CardDescription>
                     </div>
                     <StatusBadge status={run?.status ?? "created"} />
@@ -371,15 +464,21 @@ export function WorkflowVisualizer() {
                       <button
                         className={cn(
                           "grid min-h-36 gap-2 rounded-lg border bg-card p-4 text-left text-sm transition-colors hover:border-primary",
+                          node.kind !== "activity" && "border-dashed bg-muted/40",
                           nodeClass(nodeStatuses.get(node.id)),
                         )}
                         key={node.id}
                         onClick={() => selectNode(node)}
+                        style={{ marginLeft: `${Math.min(node.depth, 3) * 10}px` }}
                         type="button"
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <Badge variant="outline">{node.kind}</Badge>
-                          <NodeStatusBadge status={nodeStatuses.get(node.id) ?? "pending"} />
+                          <Badge variant={node.kind === "activity" ? "outline" : "secondary"}>
+                            {node.kind}
+                          </Badge>
+                          <NodeStatusBadge
+                            status={nodeStatuses.get(node.id) ?? "pending"}
+                          />
                         </div>
                         <strong className="text-base leading-snug">{node.label}</strong>
                         <span className="leading-6 text-muted-foreground">
@@ -394,6 +493,30 @@ export function WorkflowVisualizer() {
               <ActivityInspector activity={selectedActivity} />
             </TabsContent>
 
+            <TabsContent value="spec">
+              <Card>
+                <CardHeader className="border-b">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <CardTitle>Generated WorkflowSpec</CardTitle>
+                      <CardDescription>
+                        This JSON is validated before the runtime can execute it.
+                      </CardDescription>
+                    </div>
+                    <Badge variant="secondary">
+                      {specStats.activities} activities, {specStats.loops} loops,{" "}
+                      {specStats.branches} branches
+                    </Badge>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <pre className="max-h-[680px] overflow-auto rounded-lg bg-foreground p-4 text-xs leading-5 text-background">
+                    {stringify(spec ?? "Compile a workflow to see the spec.")}
+                  </pre>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
             <TabsContent value="timeline">
               <Card>
                 <CardHeader className="border-b">
@@ -401,7 +524,7 @@ export function WorkflowVisualizer() {
                     <div>
                       <CardTitle>Activity timeline</CardTitle>
                       <CardDescription>
-                        Skipped rows are successful activities replayed from history.
+                        Click rows such as check-device-health:device-2 before replaying.
                       </CardDescription>
                     </div>
                     <span className="text-sm text-muted-foreground">
@@ -481,17 +604,24 @@ export function WorkflowVisualizer() {
   );
 }
 
-function MetricStrip({ run }: { run: DemoRun | null }) {
+function MetricStrip({
+  run,
+  specStats,
+}: {
+  run: DemoRun | null;
+  specStats: SpecStats;
+}) {
   return (
-    <div className="grid min-w-[360px] grid-cols-3 overflow-hidden rounded-lg border bg-card shadow-sm">
+    <div className="grid min-w-[420px] grid-cols-4 overflow-hidden rounded-lg border bg-card shadow-sm">
       <Metric label="Status" value={run ? labelForStatus(run.status) : "Idle"} />
+      <Metric label="Steps" value={specStats.total} />
       <Metric label="Activities" value={run?.stats.activityCount ?? 0} />
       <Metric label="History hits" value={run?.stats.skippedCount ?? 0} />
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: number | string }) {
+function Metric({ label, value }: { label: number | string; value: number | string }) {
   return (
     <div className="grid gap-2 border-r px-4 py-3 last:border-r-0">
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
@@ -508,7 +638,7 @@ function ActivityInspector({ activity }: { activity?: ActivityExecution }) {
           <div>
             <CardTitle>{activity?.activityName ?? "No activity selected"}</CardTitle>
             <CardDescription>
-              Select a node or timeline row to inspect inputs and outputs.
+              Select an activity node or timeline row to inspect inputs and outputs.
             </CardDescription>
           </div>
           <NodeStatusBadge status={activity?.status ?? "pending"} />
@@ -599,6 +729,40 @@ async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> 
   }
 
   return payload;
+}
+
+type SpecStats = {
+  activities: number;
+  branches: number;
+  loops: number;
+  total: number;
+};
+
+function countSpecSteps(spec: WorkflowSpec | null): SpecStats {
+  const stats: SpecStats = { activities: 0, branches: 0, loops: 0, total: 0 };
+
+  function visit(steps: WorkflowStep[] = []) {
+    for (const step of steps) {
+      stats.total += 1;
+
+      if (step.type === "activity") {
+        stats.activities += 1;
+      } else if (step.type === "for_each") {
+        stats.loops += 1;
+        visit(step.steps);
+      } else {
+        stats.branches += 1;
+        visit(step.then);
+        visit(step.else ?? []);
+      }
+    }
+  }
+
+  if (spec) {
+    visit(spec.steps);
+  }
+
+  return stats;
 }
 
 function labelForStatus(status: string) {

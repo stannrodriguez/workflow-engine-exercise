@@ -1,7 +1,10 @@
 import {
   activity as sdkActivity,
+  compileWorkflowFromNaturalLanguage as sdkCompileWorkflowFromNaturalLanguage,
   createWorkflowEngine as sdkCreateWorkflowEngine,
-  workflow as sdkWorkflow,
+  createWorkflowFromSpec as sdkCreateWorkflowFromSpec,
+  validateWorkflowSpec as sdkValidateWorkflowSpec,
+  workflowSpecToGraph as sdkWorkflowSpecToGraph,
 } from "../../src/index.js";
 
 type ActivityContext = {
@@ -30,6 +33,37 @@ type WorkflowDefinition<Input = unknown, Output = unknown> = {
   name: string;
   run(context: WorkflowSdkContext<Input>): Promise<Output> | Output;
 };
+
+export type WorkflowSpec = {
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  name: string;
+  steps: WorkflowStep[];
+};
+
+export type WorkflowStep =
+  | {
+      activity: string;
+      id: string;
+      input: Record<string, unknown>;
+      key?: string;
+      output?: string;
+      type: "activity";
+    }
+  | {
+      id: string;
+      itemName: string;
+      items: string;
+      steps: WorkflowStep[];
+      type: "for_each";
+    }
+  | {
+      condition: string;
+      else?: WorkflowStep[];
+      id: string;
+      then: WorkflowStep[];
+      type: "if";
+    };
 
 type SerializedError = {
   message: string;
@@ -64,6 +98,16 @@ type WorkflowRunResult<Output = unknown> = {
   workflowName: string;
 };
 
+type WorkflowGraphNode = {
+  activityName?: string;
+  depth: number;
+  description: string;
+  id: string;
+  kind: "activity" | "for_each" | "if";
+  label: string;
+  parentId?: string;
+};
+
 type WorkflowEngineFacade = {
   replayFrom<Input, Output>(
     workflow: WorkflowDefinition<Input, Output>,
@@ -86,14 +130,38 @@ const activity = sdkActivity as <Input, Output>(definition: {
   run(input: Input, context: ActivityContext): Promise<Output> | Output;
 }) => ActivityDefinition<Input, Output>;
 
-const workflow = sdkWorkflow as <Input, Output>(definition: {
-  name: string;
-  run(context: WorkflowSdkContext<Input>): Promise<Output> | Output;
-}) => WorkflowDefinition<Input, Output>;
-
 const createWorkflowEngine = sdkCreateWorkflowEngine as (options?: {
   activities?: ActivityDefinition[];
 }) => WorkflowEngineFacade;
+
+const compileWorkflowFromNaturalLanguage =
+  sdkCompileWorkflowFromNaturalLanguage as (text: string) => WorkflowSpec;
+
+const createWorkflowFromSpec = sdkCreateWorkflowFromSpec as <
+  Input = unknown,
+  Output = unknown,
+>(
+  spec: WorkflowSpec,
+  activities: ActivityDefinition[],
+) => WorkflowDefinition<Input, Output>;
+
+const validateWorkflowSpec = sdkValidateWorkflowSpec as (
+  spec: WorkflowSpec,
+  activities: ActivityDefinition[],
+) => { ok: true };
+
+const workflowSpecToGraph = sdkWorkflowSpecToGraph as (spec: WorkflowSpec) => {
+  nodes: WorkflowGraphNode[];
+  title: string;
+};
+
+export const defaultWorkflowText = [
+  "Upgrade every fleet device.",
+  "Get the fleet device list, group devices by model, download firmware for each model,",
+  "check each device health, install firmware only if health is READY,",
+  "validate installation, record successful upgrades, record failed validations,",
+  "skip unhealthy devices, generate a summary, alert IT if there are failures, and archive logs.",
+].join(" ");
 
 type Device = {
   id: string;
@@ -169,6 +237,7 @@ type DemoSession = {
   engine: WorkflowEngineFacade;
   scenario: ScenarioDefinition;
   scenarioName: string;
+  spec: WorkflowSpec;
   workflow: WorkflowDefinition<FleetInput, UpgradeSummary>;
 };
 
@@ -227,97 +296,22 @@ const sessions =
   globalThis.workflowVisualizerSessions ??
   (globalThis.workflowVisualizerSessions = new Map<string, DemoSession>());
 
-export function getWorkflowGraph() {
+export function compileDemoWorkflow(text = defaultWorkflowText) {
+  const spec = compileWorkflowFromNaturalLanguage(text);
+  validateWorkflowSpec(spec, Object.values(createFleetActivities({})));
+
   return {
-    title: "FleetUpgradeWorkflow",
-    nodes: [
-      {
-        id: "intake",
-        label: "Get fleet device list",
-        activityName: "getFleetDeviceList",
-        kind: "source",
-        description: "Loads the fleet inventory for the requested fleet.",
-      },
-      {
-        id: "group",
-        label: "Group devices by model",
-        activityName: "groupDevicesByModel",
-        kind: "transform",
-        description: "Creates model groups so firmware work can be batched.",
-      },
-      {
-        id: "requirements",
-        label: "Get firmware requirements",
-        activityName: "getFirmwareRequirements",
-        kind: "lookup",
-        description: "Finds target firmware for each model.",
-      },
-      {
-        id: "download",
-        label: "Download firmware package",
-        activityName: "downloadFirmwarePackage",
-        kind: "tool",
-        description: "External package fetch. This is the retry demo failure point.",
-      },
-      {
-        id: "health",
-        label: "Check device health",
-        activityName: "checkDeviceHealth",
-        kind: "gate",
-        description: "Skips devices that are not ready for upgrade.",
-      },
-      {
-        id: "install",
-        label: "Install firmware",
-        activityName: "installFirmware",
-        kind: "tool",
-        description: "Applies the firmware package to each ready device.",
-      },
-      {
-        id: "validate",
-        label: "Validate installation",
-        activityName: "validateInstallation",
-        kind: "gate",
-        description: "Confirms the installed firmware is usable.",
-      },
-      {
-        id: "record",
-        label: "Record device outcome",
-        activityNames: [
-          "recordSuccessfulUpgrade",
-          "recordFailedValidation",
-          "recordSkippedDevice",
-        ],
-        kind: "write",
-        description: "Writes success, validation failure, or skip evidence.",
-      },
-      {
-        id: "summary",
-        label: "Generate upgrade summary",
-        activityName: "generateUpgradeSummary",
-        kind: "summary",
-        description: "Aggregates success, failure, and skipped counts.",
-      },
-      {
-        id: "alert",
-        label: "Send alert if failures",
-        activityName: "sendAlertToITTeam",
-        kind: "branch",
-        description: "Notifies IT only if validation failures happened.",
-      },
-      {
-        id: "archive",
-        label: "Archive upgrade logs",
-        activityName: "archiveUpgradeLogs",
-        kind: "sink",
-        description: "Stores final logs after the workflow completes.",
-      },
-    ],
+    sourceText: text,
+    spec,
+    workflow: workflowSpecToGraph(spec),
   };
 }
 
-export async function startDemoRun(scenarioName = "healthy") {
-  const session = createDemoSession(scenarioName);
+export async function startDemoRun(
+  scenarioName = "healthy",
+  spec = compileDemoWorkflow().spec,
+) {
+  const session = createDemoSession(scenarioName, spec);
   const result = await session.engine.start(
     session.workflow,
     { fleetId: "fleet-demo" },
@@ -359,12 +353,19 @@ export async function replayDemoRun(
   return serializeRun(result, session);
 }
 
-function createDemoSession(scenarioName: string): DemoSession {
+function createDemoSession(
+  scenarioName: string,
+  spec: WorkflowSpec,
+): DemoSession {
   const scenario = scenarioForName(scenarioName);
   const mutableScenario = structuredClone(scenario.patch);
   const activities = createFleetActivities(mutableScenario);
   const engine = createWorkflowEngine({ activities: Object.values(activities) });
-  const workflowDefinition = createFleetWorkflow(activities);
+  validateWorkflowSpec(spec, Object.values(activities));
+  const workflowDefinition = createWorkflowFromSpec<FleetInput, UpgradeSummary>(
+    spec,
+    Object.values(activities),
+  );
 
   return {
     controls: {
@@ -375,108 +376,9 @@ function createDemoSession(scenarioName: string): DemoSession {
     engine,
     scenario,
     scenarioName,
+    spec,
     workflow: workflowDefinition,
   };
-}
-
-function createFleetWorkflow(activities: FleetActivitySet) {
-  const {
-    archiveUpgradeLogs,
-    checkDeviceHealth,
-    downloadFirmwarePackage,
-    generateUpgradeSummary,
-    getFirmwareRequirements,
-    getFleetDeviceList,
-    groupDevicesByModel,
-    installFirmware,
-    recordFailedValidation,
-    recordSkippedDevice,
-    recordSuccessfulUpgrade,
-    sendAlertToITTeam,
-    validateInstallation,
-  } = activities;
-
-  return workflow<FleetInput, UpgradeSummary>({
-    name: "FleetUpgradeWorkflow",
-    run: async ({ input, step }) => {
-      const devices = await step(getFleetDeviceList, input);
-      const deviceGroups = await step(groupDevicesByModel, { devices });
-      const successfulUpgrades: UpgradeRecord[] = [];
-      const failedValidations: UpgradeRecord[] = [];
-      const skippedDevices: UpgradeRecord[] = [];
-
-      for (const deviceGroup of deviceGroups) {
-        const firmwareSpec = await step(
-          getFirmwareRequirements,
-          { model: deviceGroup.model },
-          { key: deviceGroup.model },
-        );
-        const firmware = await step(
-          downloadFirmwarePackage,
-          { model: deviceGroup.model, firmwareSpec },
-          { key: deviceGroup.model },
-        );
-
-        for (const device of deviceGroup.devices) {
-          const healthStatus = await step(
-            checkDeviceHealth,
-            { device },
-            { key: device.id },
-          );
-
-          if (healthStatus !== "READY") {
-            const skipped = await step(
-              recordSkippedDevice,
-              { device, healthStatus },
-              { key: device.id },
-            );
-            skippedDevices.push(skipped);
-            continue;
-          }
-
-          const installResult = await step(
-            installFirmware,
-            { device, firmware },
-            { key: device.id },
-          );
-          const validationResult = await step(
-            validateInstallation,
-            { device, installResult },
-            { key: device.id },
-          );
-
-          if (validationResult.status === "SUCCESS") {
-            const success = await step(
-              recordSuccessfulUpgrade,
-              { device, installResult, validationResult },
-              { key: device.id },
-            );
-            successfulUpgrades.push(success);
-          } else {
-            const failedValidation = await step(
-              recordFailedValidation,
-              { device, validationResult },
-              { key: device.id },
-            );
-            failedValidations.push(failedValidation);
-          }
-        }
-      }
-
-      const summary = await step(generateUpgradeSummary, {
-        failedValidations,
-        skippedDevices,
-        successfulUpgrades,
-      });
-
-      if (summary.failureCount > 0) {
-        await step(sendAlertToITTeam, { summary });
-      }
-
-      await step(archiveUpgradeLogs, { summary });
-      return summary;
-    },
-  });
 }
 
 function createFleetActivities(
